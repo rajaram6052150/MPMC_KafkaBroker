@@ -18,6 +18,11 @@ public class Consumer implements Runnable{
             }
         }
     }
+
+    public int getConsumerOffset() {
+        return consumerOffset;
+    }
+
 }
 
 

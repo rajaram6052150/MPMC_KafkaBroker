@@ -1,17 +1,28 @@
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Logger;
 
 public class KafkaBroker<T> {
 
-    private final List<Segment<T>> segments = new ArrayList<>();
+    public ConcurrentHashMap<Integer , Segment<T>> segments;
     private final AtomicLong ProOffset = new AtomicLong(0);
     private volatile Segment<T> CurSegment;
-    public int segmentSize = 1000;
+    public int segmentSize = 10;
+    public static int idCounter = -1;
+    public int RetentionID = 0;
+    public List<Consumer> consumers;
+    ScheduledExecutorService RetentionMonitor = Executors.newScheduledThreadPool(1);
+    Logger logger = Logger.getLogger(KafkaBroker.class.getName());
 
     public KafkaBroker() {
-        CurSegment = new Segment<>(0);
-        segments.add(CurSegment);
+        CurSegment = new Segment<>(0 , ++idCounter);
+        segments = new ConcurrentHashMap<>();
+        segments.put(idCounter , CurSegment);
+        RetentionMonitor.scheduleAtFixedRate(() -> DeleteOldSegments() , 2 , 5 , TimeUnit.SECONDS);
     }
 
     public long append(T data) {
@@ -20,17 +31,16 @@ public class KafkaBroker<T> {
 
         int segmentIndex = (int)(offset / segmentSize);
         int index = (int) (offset % segmentSize);
-
         Segment<T> segment;
 
-        if (segmentIndex >= segments.size()) {
+        if (!segments.containsKey(segmentIndex)) {
             synchronized (this) {
-                System.out.println("New segment created");
-                if (segmentIndex >= segments.size()) {
+                if (!segments.containsKey(segmentIndex)) {
                     long stOffset = segmentIndex * segmentSize;
-                    segment = new Segment<>(stOffset);
-                    segments.add(segment);
+                    segment = new Segment<>(stOffset , ++idCounter);
+                    segments.put(idCounter , segment);
                     CurSegment = segment;
+                    logger.info("New Segment Created " + segmentIndex);
                 }
             }
         }
@@ -48,12 +58,32 @@ public class KafkaBroker<T> {
         if (segmentIndex >= segments.size()) {
             return null;
         }
-
         Segment<T> segment = segments.get(segmentIndex);
         return segment.read(index);
     }
 
+    public void setConsumers(List<Consumer> consumers){
+        this.consumers = consumers;
+    }
+
+    public void DeleteOldSegments() {
+
+        int minConOffset = Integer.MAX_VALUE;
+
+        for (Consumer c : consumers) {
+            minConOffset = Math.min(minConOffset, c.getConsumerOffset());
+        }
+
+        if (segments.get(RetentionID).getStartOffset() + segmentSize < minConOffset) {
+            segments.remove(RetentionID);
+            ++RetentionID;
+            logger.severe("Segment " + (RetentionID - 1) + " is deleted");
+        }
+    }
 }
+
+
+
 
 
 
